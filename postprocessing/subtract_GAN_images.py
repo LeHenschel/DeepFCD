@@ -34,20 +34,21 @@ def subtract_GAN_images(realdir, fakedir, subjid, direction, pngoutdir):
             os.makedirs(pngoutdir)
             
         outslice.save(os.path.join(pngoutdir,fake_png.split('/')[-1]))
-        
-        
-parser = argparse.ArgumentParser(description='Creates difference images of synthetic and real modalities. Output will be PNGs.')
-parser.add_argument("-rd", "--realdir", help="path to directory of real modality PNGs")
-parser.add_argument("-fd", "--fakedir", help="path to directory of fake modality PNGs")
-parser.add_argument("-s", "--subjid", help="subject ID, used also as prefix for output files")
-parser.add_argument("-dir", "--directionality", choices=['real-fake','fake-real'], help="directionality of subtraction")
-parser.add_argument("-od", "--outdir", help="path to PNG output directory. Creates directory if it doesn't exist")
-
-args=parser.parse_args()
-
-subtract_GAN_images(args.realdir, args.fakedir, args.subjid, args.directionality, args.outdir)
 
 
+def main():
+    parser = argparse.ArgumentParser(description='Creates difference images of synthetic and real modalities. Output will be PNGs.')
+    parser.add_argument("-rd", "--realdir", help="path to directory of real modality PNGs")
+    parser.add_argument("-fd", "--fakedir", help="path to directory of fake modality PNGs")
+    parser.add_argument("-s", "--subjid", help="subject ID, used also as prefix for output files")
+    parser.add_argument("-dir", "--directionality", choices=['real-fake','fake-real'],
+                        help="directionality of subtraction", default="real-fake")
+    parser.add_argument("-od", "--outdir", help="path to PNG output directory. Creates directory if it doesn't exist")
 
-        
-    
+    args=parser.parse_args()
+
+    subtract_GAN_images(args.realdir, args.fakedir, args.subjid, args.directionality, args.outdir)
+
+
+if __name__ == "__main__":
+    main()
