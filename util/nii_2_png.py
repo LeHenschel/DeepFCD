@@ -17,12 +17,14 @@ from PIL import ImageStat
 import warnings
 warnings.filterwarnings("ignore")
 
+
 def show_slices(slices):
     """ Function to display row of image slices """
     fig, axes = plt.subplots(1, len(slices))
     for i, slice in enumerate(slices):
         axes[i].imshow(slice.T, cmap="gray", origin="lower")
-        
+
+
 def image_padding(img, outsize):
     """ Function to pad and scale image to desired size"""
     
@@ -39,7 +41,8 @@ def image_padding(img, outsize):
                     (outsize-new_size[1])//2))
     
     return new_img
-        
+
+
 def save_to_png(filepath, prefix, outtype, outsize, outdir, cutoff):
     """Function to save NIFTI slicewise as png with right scaling
     and in radiological convention (left is right, right is left)"""
