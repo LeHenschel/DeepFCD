@@ -6,25 +6,37 @@
 # Written by: Bastian David, M.Sc.
 
 # Do you want to use morphometric maps?
-MAP=false
+MAP=true
 
-# input directories
-BASE_DIR=/home/bdavid/Deep_Learning/data/bonn/FCD/iso_FLAIR/nii
+# export FREESURFER License and FSLOUTPUTTYPE (set to nii.gz)
+export FS_LICENSE=/output/postprocessing/.license
+export OMP_NUM_THREADS=1
+export FSLOUTPUTTYPE=NIFTI_GZ
 
-REAL_T1_DIR=${BASE_DIR}/T1
-REAL_FLAIR_DIR=${BASE_DIR}/FLAIR
-GAN_INPUT_T1_DIR=${BASE_DIR}/gan_input_T1
-GAN_TARGET_FLAIR_DIR=${BASE_DIR}/gan_target_FLAIR
-SYNTH_FLAIR_DIR=${BASE_DIR}/synth_FLAIR
-DIFF_DIR=${BASE_DIR}/diff_real_FLAIR-synth_FLAIR
-MAP_DIR=${BASE_DIR}/MAP_DeepFCD
-ROI_DIR=${BASE_DIR}/ROI
+# base directories
+INPUT_DIR=/input/data/berlin/analyses/FCD/nii
+OUTPUT_DIR=/output/data/berlin/analyses/FCD/nii
 
-# make output directories
-MATRICES_DIR=${BASE_DIR}/matrices
-DEEPMEDIC_INPUT=${BASE_DIR}/deepmedic_input
-tmp_dir=${BASE_DIR}/tmp
-mkdir -p $MATRICES_DIR $DEEPMEDIC_INPUT $tmp_dir
+# original input directories
+REAL_T1_DIR=${INPUT_DIR}/T1
+REAL_FLAIR_DIR=${INPUT_DIR}/FLAIR
+MAP_DIR=${INPUT_DIR}/berlin_morphometric_maps/FCD # morphometric_maps (also change order Sid_T1) #${INPUT_DIR}/MAP_DeepFCD
+ROI_DIR=${INPUT_DIR}/ROI
+
+# GAN processing
+GAN_INPUT_T1_DIR=${OUTPUT_DIR}/gan_input_T1
+GAN_TARGET_FLAIR_DIR=${OUTPUT_DIR}/gan_target_FLAIR
+SYNTH_FLAIR_DIR=${OUTPUT_DIR}/synth_FLAIR
+DIFF_DIR=${OUTPUT_DIR}/diff_real_FLAIR-synth_FLAIR
+
+# post-processing of GAN results and MAP --> created in here
+MATRICES_DIR=${OUTPUT_DIR}/matrices
+DEEPMEDIC_INPUT=${OUTPUT_DIR}/deepmedic_input
+tmp_dir=${OUTPUT_DIR}/tmp
+log_dir=${OUTPUT_DIR}/log
+
+# make directories
+mkdir -p $MATRICES_DIR $tmp_dir $DEEPMEDIC_INPUT $log_dir
 
 # define subjects (not necessary if using parallelized wrapper script)
 #SUBJECTS=$(ls ${T1_DIR}| cut -d'_' -f1)
@@ -33,109 +45,167 @@ SUBJECTS=$1
 # define ROIs not being purged (filtering out mostly subcortical structures in this step)
 rois="3 2 24 41 42 77 78 79 80 81 82 100 109"
 
+function RunIt()
+{
+# parameters
+# $1 : cmd  (command to run)
+# $2 : LF   (log file)
+# $3 : CMDF (command file) optional
+# if CMDF is passed, then LF is ignored and cmd is echoed into CMDF and not run
+  cmd=$1
+  LF=$2
+  if [[ $# -eq 3 ]]
+  then
+    CMDF=$3
+    echo "echo \"$cmd\" " |& tee -a $CMDF
+    echo "$timecmd $cmd " |& tee -a $CMDF
+    echo "if [ \${PIPESTATUS[0]} -ne 0 ] ; then exit 1 ; fi" >> $CMDF
+  else
+    echo $cmd |& tee -a $LF
+    $timecmd $cmd |& tee -a $LF
+    if [ ${PIPESTATUS[0]} -ne 0 ] ; then exit 1 ; fi
+  fi
+}
+
+
 for sbj in $SUBJECTS
 do
-  echo "Processing $sbj"
+  # Set up log file
+  LF=$log_dir/$sbj/fcd_gan.log
+  mkdir $log_dir/$sbj
+  if [ $LF != /dev/null ] ; then  rm -f $LF ; fi
+  echo "Log file for FCD GAN Processing" >> $LF
+  date  |& tee -a $LF
+  echo "Processing $sbj" |& tee -a $LF
+  echo "" |& tee -a $LF
 
-  flirt -in ${REAL_T1_DIR}/${sbj}_T1.nii.gz -ref ${REAL_T1_DIR}/${sbj}_T1.nii.gz -applyisoxfm 0.8 -nosearch -noresampblur -cost normmi -interp spline -out ${tmp_dir}/${sbj}_T1
+  cmd="flirt -in ${REAL_T1_DIR}/${sbj}_T1.nii.gz -ref ${REAL_T1_DIR}/${sbj}_T1.nii.gz -applyisoxfm 0.8 -nosearch -noresampblur -cost normmi -interp spline -out ${tmp_dir}/${sbj}_T1"
+  RunIt "$cmd" $LF
 
-  flirt -in ${REAL_FLAIR_DIR}/${sbj}_FLAIR.nii.gz -ref ${tmp_dir}/${sbj}_T1 -omat ${MATRICES_DIR}/${sbj}_FLAIR_2_T1.mat -out ${tmp_dir}/${sbj}_FLAIR -noresampblur -interp spline
+  cmd="flirt -in ${REAL_FLAIR_DIR}/${sbj}_FLAIR.nii.gz -ref ${tmp_dir}/${sbj}_T1 -omat ${MATRICES_DIR}/${sbj}_FLAIR_2_T1.mat -out ${tmp_dir}/${sbj}_FLAIR -noresampblur -interp spline"
+  RunIt "$cmd" $LF
+  cmd="flirt -in ${ROI_DIR}/${sbj}_roi -ref ${tmp_dir}/${sbj}_T1 -applyxfm -init ${MATRICES_DIR}/${sbj}_FLAIR_2_T1.mat -out ${DEEPMEDIC_INPUT}/${sbj}_roi -interp nearestneighbour"
+  RunIt "$cmd" $LF
 
-  flirt -in ${ROI_DIR}/${sbj}_roi -ref ${tmp_dir}/${sbj}_T1 -applyxfm -init ${MATRICES_DIR}/${sbj}_FLAIR_2_T1.mat -out ${DEEPMEDIC_INPUT}/${sbj}_roi -interp nearestneighbour
+  cmd="flirt -in ${GAN_INPUT_T1_DIR}/${sbj}_* -ref ${tmp_dir}/${sbj}_T1 -omat ${MATRICES_DIR}/${sbj}_gan_input_T1_2_T1.mat -nosearch -noresampblur -cost normmi -interp spline"
+  RunIt "$cmd" $LF
 
-  flirt -in ${GAN_INPUT_T1_DIR}/${sbj}_* -ref ${tmp_dir}/${sbj}_T1 -omat ${MATRICES_DIR}/${sbj}_gan_input_T1_2_T1.mat -nosearch -noresampblur -cost normmi -interp spline
+  cmd="flirt -in ${DIFF_DIR}/${sbj}_* -ref ${tmp_dir}/${sbj}_T1 -applyxfm -init ${MATRICES_DIR}/${sbj}_gan_input_T1_2_T1.mat -nosearch -noresampblur -cost normmi -interp spline -out ${DEEPMEDIC_INPUT}/${sbj}_diff"
+  RunIt "$cmd" $LF
 
-  flirt -in ${DIFF_DIR}/${sbj}_* -ref ${tmp_dir}/${sbj}_T1 -applyxfm -init ${MATRICES_DIR}/${sbj}_gan_input_T1_2_T1.mat -nosearch -noresampblur -cost normmi -interp spline -out ${DEEPMEDIC_INPUT}/${sbj}_diff
+  cmd="bet ${tmp_dir}/${sbj}_T1 ${tmp_dir}/${sbj}_bet_T1 -R"
+  RunIt "$cmd" $LF
+  cmd="fast -g -o ${tmp_dir}/${sbj} ${tmp_dir}/${sbj}_bet_T1"
+  RunIt "$cmd" $LF
 
-  bet ${tmp_dir}/${sbj}_T1 ${tmp_dir}/${sbj}_bet_T1 -R
-  fast -g -o ${tmp_dir}/${sbj} ${tmp_dir}/${sbj}_bet_T1
+  cmd="fslmaths ${tmp_dir}/${sbj}_seg_1 -add ${tmp_dir}/${sbj}_seg_2 ${tmp_dir}/${sbj}_gmwm"
+  RunIt "$cmd" $LF
 
-  fslmaths ${tmp_dir}/${sbj}_seg_1 -add ${tmp_dir}/${sbj}_seg_2 ${tmp_dir}/${sbj}_gmwm
-  fslmaths ${tmp_dir}/${sbj}_gmwm -fillh ${tmp_dir}/${sbj}_gmwm
-  fslmaths ${tmp_dir}/${sbj}_gmwm -kernel sphere 1 -ero ${tmp_dir}/${sbj}_gmwm_eroded
+  cmd="fslmaths ${tmp_dir}/${sbj}_gmwm -fillh ${tmp_dir}/${sbj}_gmwm"
+  RunIt "$cmd" $LF
 
-  samseg --t1w ${tmp_dir}/${sbj}_T1.nii.gz --flair ${tmp_dir}/${sbj}_FLAIR.nii.gz --refmode t1w --o ${tmp_dir}/${sbj} --no-save-warp --threads 1 --pallidum-separate
+  cmd="fslmaths ${tmp_dir}/${sbj}_gmwm -kernel sphere 1 -ero ${tmp_dir}/${sbj}_gmwm_eroded"
+  RunIt "$cmd" $LF
 
-  mri_label2vol --seg ${tmp_dir}/${sbj}/seg.mgz --temp ${tmp_dir}/${sbj}_T1.nii.gz --o ${tmp_dir}/${sbj}/seg_reg.nii --regheader ${tmp_dir}/${sbj}/seg.mgz
+  cmd="samseg --t1w ${tmp_dir}/${sbj}_T1.nii.gz --flair ${tmp_dir}/${sbj}_FLAIR.nii.gz --refmode t1w --o ${tmp_dir}/${sbj} --no-save-warp --threads 1 --pallidum-separate"
+  RunIt "$cmd" $LF
+  cmd="mri_label2vol --seg ${tmp_dir}/${sbj}/seg.mgz --temp ${tmp_dir}/${sbj}_T1.nii.gz --o ${tmp_dir}/${sbj}/seg_reg.nii --regheader ${tmp_dir}/${sbj}/seg.mgz"
+  RunIt "$cmd" $LF
 
-  fslmaths ${tmp_dir}/${sbj}/seg_reg.nii -mul 0 ${tmp_dir}/${sbj}_only_cortical_structures
+  cmd="fslmaths ${tmp_dir}/${sbj}/seg_reg.nii -mul 0 ${tmp_dir}/${sbj}_only_cortical_structures"
+  RunIt "$cmd" $LF
 
   for roi in $rois
   do
 
-    fslmaths ${tmp_dir}/${sbj}/seg_reg.nii -thr ${roi} -uthr ${roi} -bin ${tmp_dir}/${sbj}_roi_tmp
-    fslmaths ${tmp_dir}/${sbj}_only_cortical_structures -add ${tmp_dir}/${sbj}_roi_tmp ${tmp_dir}/${sbj}_only_cortical_structures
+    cmd="fslmaths ${tmp_dir}/${sbj}/seg_reg.nii -thr ${roi} -uthr ${roi} -bin ${tmp_dir}/${sbj}_roi_tmp"
+    RunIt "$cmd" $LF
+    cmd="fslmaths ${tmp_dir}/${sbj}_only_cortical_structures -add ${tmp_dir}/${sbj}_roi_tmp ${tmp_dir}/${sbj}_only_cortical_structures"
+    RunIt "$cmd" $LF
 
   done
 
-  fslmaths ${tmp_dir}/${sbj}_gmwm_eroded -mul ${tmp_dir}/${sbj}_only_cortical_structures ${tmp_dir}/${sbj}_gmwm_eroded
+  cmd="fslmaths ${tmp_dir}/${sbj}_gmwm_eroded -mul ${tmp_dir}/${sbj}_only_cortical_structures ${tmp_dir}/${sbj}_gmwm_eroded"
+  RunIt "$cmd" $LF
 
-  fslmaths ${tmp_dir}/${sbj}_gmwm_eroded -kernel sphere 1 -ero ${tmp_dir}/${sbj}_gmwm_eroded_ero
-  fslmaths ${tmp_dir}/${sbj}_gmwm_eroded_ero -kernel sphere 1 -dilF ${DEEPMEDIC_INPUT}/${sbj}_mask
+  cmd="fslmaths ${tmp_dir}/${sbj}_gmwm_eroded -kernel sphere 1 -ero ${tmp_dir}/${sbj}_gmwm_eroded_ero"
+  RunIt "$cmd" $LF
 
+  cmd="fslmaths ${tmp_dir}/${sbj}_gmwm_eroded_ero -kernel sphere 1 -dilF ${DEEPMEDIC_INPUT}/${sbj}_mask"
+  RunIt "$cmd" $LF
   # intermediate cleaning
   #rm -rf ${tmp_dir}/${sbj}
 
   # normalizing difference
   read -r mean std <<< $(fslstats ${DEEPMEDIC_INPUT}/${sbj}_diff -k ${DEEPMEDIC_INPUT}/${sbj}_mask -m -s)
-
-  fslmaths ${DEEPMEDIC_INPUT}/${sbj}_diff -sub $mean -div $std -mul ${DEEPMEDIC_INPUT}/${sbj}_mask ${DEEPMEDIC_INPUT}/${sbj}_diff
+  cmd="fslmaths ${DEEPMEDIC_INPUT}/${sbj}_diff -sub $mean -div $std -mul ${DEEPMEDIC_INPUT}/${sbj}_mask ${DEEPMEDIC_INPUT}/${sbj}_diff"
+  RunIt "$cmd" $LF
 
   # normalizing T1
   read -r mean std <<< $(fslstats ${tmp_dir}/${sbj}_T1 -k ${DEEPMEDIC_INPUT}/${sbj}_mask -m -s)
-
-  fslmaths ${tmp_dir}/${sbj}_T1 -sub $mean -div $std ${DEEPMEDIC_INPUT}/${sbj}_T1
+  cmd="fslmaths ${tmp_dir}/${sbj}_T1 -sub $mean -div $std ${DEEPMEDIC_INPUT}/${sbj}_T1"
+  RunIt "$cmd" $LF
 
   # normalizing FLAIR
   read -r mean std <<< $(fslstats ${tmp_dir}/${sbj}_FLAIR -k ${DEEPMEDIC_INPUT}/${sbj}_mask -m -s)
-
-  fslmaths ${tmp_dir}/${sbj}_FLAIR -sub $mean -div $std ${DEEPMEDIC_INPUT}/${sbj}_FLAIR
+  cmd="fslmaths ${tmp_dir}/${sbj}_FLAIR -sub $mean -div $std ${DEEPMEDIC_INPUT}/${sbj}_FLAIR"
+  RunIt "$cmd" $LF
   
   if $MAP
   then
 
     # normalizing junction map
-    imcp ${MAP_DIR}/T1_${sbj}_junction_z_score ${tmp_dir}/T1_${sbj}_junction_z_score
-    fslcpgeom ${REAL_T1_DIR}/${sbj}_T1 ${tmp_dir}/T1_${sbj}_junction_z_score
+    cmd="imcp ${MAP_DIR}/T1_${sbj}_junction_z_score ${tmp_dir}/T1_${sbj}_junction_z_score"
+    RunIt "$cmd" $LF
 
-    flirt -in ${tmp_dir}/T1_${sbj}_junction_z_score -ref ${tmp_dir}/T1_${sbj}_junction_z_score -applyisoxfm 0.8 -nosearch -noresampblur -cost normmi -interp spline -out ${tmp_dir}/T1_${sbj}_junction_z_score
+    cmd="fslcpgeom ${REAL_T1_DIR}/${sbj}_T1 ${tmp_dir}/T1_${sbj}_junction_z_score"
+    RunIt "$cmd" $LF
+
+    cmd="flirt -in ${tmp_dir}/T1_${sbj}_junction_z_score -ref ${tmp_dir}/T1_${sbj}_junction_z_score -applyisoxfm 0.8 -nosearch -noresampblur -cost normmi -interp spline -out ${tmp_dir}/T1_${sbj}_junction_z_score"
+    RunIt "$cmd" $LF
 
     read -r mean std <<< $(fslstats ${tmp_dir}/T1_${sbj}_junction_z_score -k ${DEEPMEDIC_INPUT}/${sbj}_mask -m -s)
-
-    fslmaths ${tmp_dir}/T1_${sbj}_junction_z_score -sub $mean -div $std -mul ${DEEPMEDIC_INPUT}/${sbj}_mask ${DEEPMEDIC_INPUT}/${sbj}_junction
+    cmd="fslmaths ${tmp_dir}/T1_${sbj}_junction_z_score -sub $mean -div $std -mul ${DEEPMEDIC_INPUT}/${sbj}_mask ${DEEPMEDIC_INPUT}/${sbj}_junction"
+    RunIt "$cmd" $LF
 
     # normalizing extension map
-    imcp ${MAP_DIR}/T1_${sbj}_extension_z_score ${tmp_dir}/T1_${sbj}_extension_z_score
-    fslcpgeom ${REAL_T1_DIR}/${sbj}_T1 ${tmp_dir}/T1_${sbj}_extension_z_score
+    cmd="imcp ${MAP_DIR}/T1_${sbj}_extension_z_score ${tmp_dir}/T1_${sbj}_extension_z_score"
+    RunIt "$cmd" $LF
+    cmd="fslcpgeom ${REAL_T1_DIR}/${sbj}_T1 ${tmp_dir}/T1_${sbj}_extension_z_score"
+    RunIt "$cmd" $LF
 
-    flirt -in ${tmp_dir}/T1_${sbj}_extension_z_score -ref ${tmp_dir}/T1_${sbj}_extension_z_score -applyisoxfm 0.8 -nosearch -noresampblur -cost normmi -interp spline -out ${tmp_dir}/T1_${sbj}_extension_z_score
+    cmd="flirt -in ${tmp_dir}/T1_${sbj}_extension_z_score -ref ${tmp_dir}/T1_${sbj}_extension_z_score -applyisoxfm 0.8 -nosearch -noresampblur -cost normmi -interp spline -out ${tmp_dir}/T1_${sbj}_extension_z_score"
+    RunIt "$cmd" $LF
 
     read -r mean std <<< $(fslstats ${tmp_dir}/T1_${sbj}_extension_z_score -k ${DEEPMEDIC_INPUT}/${sbj}_mask -m -s)
-
-    fslmaths ${tmp_dir}/T1_${sbj}_extension_z_score -sub $mean -div $std -mul ${DEEPMEDIC_INPUT}/${sbj}_mask ${DEEPMEDIC_INPUT}/${sbj}_extension
+    cmd="fslmaths ${tmp_dir}/T1_${sbj}_extension_z_score -sub $mean -div $std -mul ${DEEPMEDIC_INPUT}/${sbj}_mask ${DEEPMEDIC_INPUT}/${sbj}_extension"
+    RunIt "$cmd" $LF
 
     # normalzing thickness map
-    imcp ${MAP_DIR}/T1_${sbj}_thickness_z_score ${tmp_dir}/T1_${sbj}_thickness_z_score
-    fslcpgeom ${REAL_T1_DIR}/${sbj}_T1 ${tmp_dir}/T1_${sbj}_thickness_z_score
+    cmd="imcp ${MAP_DIR}/T1_${sbj}_thickness_z_score ${tmp_dir}/T1_${sbj}_thickness_z_score"
+    RunIt "$cmd" $LF
+    cmd="fslcpgeom ${REAL_T1_DIR}/${sbj}_T1 ${tmp_dir}/T1_${sbj}_thickness_z_score"
+    RunIt "$cmd" $LF
 
-    flirt -in ${tmp_dir}/T1_${sbj}_thickness_z_score -ref ${tmp_dir}/T1_${sbj}_thickness_z_score -applyisoxfm 0.8 -nosearch -noresampblur -cost normmi -interp spline -out ${tmp_dir}/T1_${sbj}_thickness_z_score
+    cmd="flirt -in ${tmp_dir}/T1_${sbj}_thickness_z_score -ref ${tmp_dir}/T1_${sbj}_thickness_z_score -applyisoxfm 0.8 -nosearch -noresampblur -cost normmi -interp spline -out ${tmp_dir}/T1_${sbj}_thickness_z_score"
+    RunIt "$cmd" $LF
 
     read -r mean std <<< $(fslstats ${tmp_dir}/T1_${sbj}_thickness_z_score -k ${DEEPMEDIC_INPUT}/${sbj}_mask -m -s)
-
-    fslmaths ${tmp_dir}/T1_${sbj}_thickness_z_score -sub $mean -div $std -mul ${DEEPMEDIC_INPUT}/${sbj}_mask ${DEEPMEDIC_INPUT}/${sbj}_thickness
+    cmd="fslmaths ${tmp_dir}/T1_${sbj}_thickness_z_score -sub $mean -div $std -mul ${DEEPMEDIC_INPUT}/${sbj}_mask ${DEEPMEDIC_INPUT}/${sbj}_thickness"
+    RunIt "$cmd" $LF
     
   fi
 
   # creating weight map using mri_robust_register
-  mri_robust_register --mov ${GAN_TARGET_FLAIR_DIR}/${sbj}_* --dst ${SYNTH_FLAIR_DIR}/${sbj}_* --lta ${tmp_dir}/${sbj}.lta --weights ${tmp_dir}/${sbj}_weights.nii --satit
-
-  flirt -in ${tmp_dir}/${sbj}_weights.nii -ref ${tmp_dir}/${sbj}_T1 -applyxfm -init ${MATRICES_DIR}/${sbj}_gan_input_T1_2_T1.mat -nosearch -noresampblur -cost normmi -interp spline -out ${tmp_dir}/${sbj}_weights_reg
-
+  cmd="mri_robust_register --mov ${GAN_TARGET_FLAIR_DIR}/${sbj}_* --dst ${SYNTH_FLAIR_DIR}/${sbj}_* --lta ${tmp_dir}/${sbj}.lta --weights ${tmp_dir}/${sbj}_weights.nii --satit"
+  RunIt "$cmd" $LF
+  cmd="flirt -in ${tmp_dir}/${sbj}_weights.nii -ref ${tmp_dir}/${sbj}_T1 -applyxfm -init ${MATRICES_DIR}/${sbj}_gan_input_T1_2_T1.mat -nosearch -noresampblur -cost normmi -interp spline -out ${tmp_dir}/${sbj}_weights_reg"
+  RunIt "$cmd" $LF
   read -r mean std <<< $(fslstats ${tmp_dir}/${sbj}_weights_reg -k ${DEEPMEDIC_INPUT}/${sbj}_mask -m -s)
-
-  fslmaths ${tmp_dir}/${sbj}_weights_reg -sub $mean -div $std -mul ${DEEPMEDIC_INPUT}/${sbj}_mask ${DEEPMEDIC_INPUT}/${sbj}_weights
+  cmd="fslmaths ${tmp_dir}/${sbj}_weights_reg -sub $mean -div $std -mul ${DEEPMEDIC_INPUT}/${sbj}_mask ${DEEPMEDIC_INPUT}/${sbj}_weights"
+  RunIt "$cmd" $LF
 
   # cleaning up temporary directory
-  rm -rf ${tmp_dir}/${sbj}_* ${tmp_dir}/${sbj}
+  #rm -rf ${tmp_dir}/${sbj}_* ${tmp_dir}/${sbj}
 
 done
